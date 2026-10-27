@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>TradeDoc CrossCheck</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#f4f6f9;color:#1d2433}
+ header{background:#12306b;color:#fff;padding:18px 32px}
+ header h1{margin:0;font-size:22px} header p{margin:4px 0 0;opacity:.8;font-size:14px}
+ main{max-width:1100px;margin:24px auto;padding:0 24px}
+ .card{background:#fff;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);padding:20px;margin-bottom:20px}
+ .uploads{display:flex;gap:24px;align-items:flex-end;flex-wrap:wrap}
+ label{font-weight:600;font-size:14px;display:block;margin-bottom:6px}
+ button{background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:10px 18px;font-size:15px;cursor:pointer}
+ .pill{display:inline-block;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600;margin-right:8px}
+ .match{background:#e3f6e8;color:#1a7f37}.mismatch{background:#ffe3e3;color:#b42318}.missing{background:#fff4d6;color:#9a6700}
+ .review{background:#ede4ff;color:#5b2bb5}
+ table{width:100%;border-collapse:collapse;font-size:14px}
+ th,td{text-align:left;padding:9px 10px;border-bottom:1px solid #e6e9ef;vertical-align:top}
+ th{background:#f8f9fb;font-size:12px;text-transform:uppercase;color:#5a6478}
+ tr.mismatch td{background:#fff5f5} tr.missing td{background:#fffbeb}
+ .sev-high{color:#b42318;font-weight:700}.sev-medium{color:#9a6700;font-weight:600}.sev-low{color:#5a6478}
+ .note{color:#5a6478;font-size:12px} .banner{padding:12px 16px;border-radius:8px;font-weight:600}
+ .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px} .muted{color:#5a6478;font-size:13px}
+ code{background:#f0f2f6;padding:1px 5px;border-radius:4px}
+</style></head><body>
+<header><h1>TradeDoc CrossCheck</h1><p>Extract a commercial invoice and bill of lading, cross-check them, and flag what a broker must review before the customs declaration is filed.</p></header>
+<main>
+ <div class="card uploads">
+  <div><label>Commercial invoice (PDF)</label><input type="file" id="inv" accept="application/pdf"></div>
+  <div><label>Bill of lading (PDF)</label><input type="file" id="bl" accept="application/pdf"></div>
+  <button id="go">Cross-check</button>
+  <span id="status" class="muted"></span>
+ </div>
+ <div id="out"></div>
+</main>
+<script>
+const esc = v => v == null ? '<span class="muted">—</span>' : String(v).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const label = f => f.replace(/_/g,' ').replace(' kg',' (kg)');
+
+function fieldsTable(doc){
+  const skip = new Set(['confidence','line_items','hs_code_suggestion','doc_type','extraction_method']);
+  return '<table>' + Object.entries(doc).filter(([k])=>!skip.has(k)).map(([k,v]) =>
+    `<tr><td class="muted">${label(k)}</td><td>${esc(v)}</td></tr>`).join('') + '</table>';
+}
+
+function render(r){
+  const s = r.summary, inv = r.invoice, bl = r.bill_of_lading;
+  const ban = r.needs_human_review
+    ? `<div class="banner mismatch">⚠ Needs human review: ${s.needs_review} field(s) flagged before declaration can be drafted</div>`
+    : `<div class="banner match">✓ All checked fields agree — declaration can be drafted (broker sign-off still required)</div>`;
+  const rows = r.comparisons.map(c => `<tr class="${c.status}">
+     <td><b>${label(c.field)}</b></td><td>${esc(c.invoice_value)}</td><td>${esc(c.bl_value)}</td>
+     <td><span class="pill ${c.status}">${c.status}</span>${c.needs_human_review?'<span class="pill review">review</span>':''}</td>
+     <td class="sev-${c.severity}">${c.severity}</td><td>${Math.round(c.confidence*100)}%</td>
+     <td class="note">${esc(c.note)}</td></tr>`).join('');
+  const hs = inv.hs_code_suggestion;
+  document.getElementById('out').innerHTML = `
+   <div class="card">${ban}
+    <p class="muted">${s.match} match · ${s.mismatch} mismatch · ${s.missing} missing · extracted via <code>${inv.extraction_method}</code> / <code>${bl.extraction_method}</code></p>
+    <table><tr><th>Field</th><th>Invoice</th><th>Bill of lading</th><th>Status</th><th>Severity</th><th>Conf.</th><th>Note</th></tr>${rows}</table>
+    ${hs ? `<p><b>Suggested HS code:</b> <code>${hs.code}</code> ${esc(hs.description)} <span class="pill missing">SUGGESTION – broker to confirm</span><br><span class="note">${esc(hs.basis)}</span></p>` : ''}
+   </div>
+   <div class="grid">
+    <div class="card"><h3>Commercial invoice</h3>${fieldsTable(inv)}</div>
+    <div class="card"><h3>Bill of lading</h3>${fieldsTable(bl)}</div>
+   </div>`;
+}
+
+document.getElementById('go').onclick = async () => {
+  const inv = document.getElementById('inv').files[0], bl = document.getElementById('bl').files[0];
+  const st = document.getElementById('status');
+  if(!inv || !bl){ st.textContent = 'Choose both PDFs first.'; return; }
+  const fd = new FormData(); fd.append('invoice', inv); fd.append('bill_of_lading', bl);
+  st.textContent = 'Extracting…';
+  const res = await fetch('/crosscheck', {method:'POST', body: fd});
+  if(!res.ok){ st.textContent = 'Error: ' + (await res.text()); return; }
+  st.textContent = ''; render(await res.json());
+};
+</script></body></html>
